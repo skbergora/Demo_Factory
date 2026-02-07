@@ -1,2 +1,5 @@
 # Ignore local credential templates containing secrets
 credentials_local.json
+adb_credentials.json
+config/Demo-Factory-ssh-key-2026-02-07.key
+config/Demo-Factory-ssh-key-2026-02-07.key.pub

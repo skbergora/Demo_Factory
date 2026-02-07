@@ -140,28 +140,39 @@ Deliver a reusable, ATP-first Oracle APEX demo factory—augmented with an Oracl
 
 > _Keep sensitive OCI configuration files private if the GitHub repo is public. Consider `.gitignore` entries for wallets or secrets._
 
-### 11. DevOps Pipeline Next Steps
-1. **Define Secrets & Artifacts**
-   - **Vault secrets** (Vault already created):
-     - `ADB_ADMIN_PASSWORD` – encrypted password for `DEMO_FACTORY_ADMIN` (use plain text secret type; mark rotation policy per security rules).
-     - `ADB_SQLCL_CONNECT` – `user/password@hostname:port/service_name` or EZConnect string if you prefer retrieving one secret for SQLcl.
-     - `OBJECT_STORAGE_AUTH` – optional JSON/API key for accessing Object Storage if the pipeline can’t use resource principals.
-   - **Uploading secrets**: In OCI Console → Vault → Secrets → “Create Secret,” pick the previously created master key, provide a base64/UTF-8 string (e.g., the admin password), and store each as a separate secret OCID to reference in DevOps. Note each secret OCID in this guide for pipeline wiring.
-   - **Wallet storage**: Upload `Wallet_SBAITST.zip` to a private Object Storage bucket (e.g., `demo-factory-artifacts/wallets/Wallet_SBAITST.zip`) or to the DevOps Artifact Registry. Record the Object Storage URI and configure DevOps pipeline stages with either:
-     - Object Storage connection + pre-authenticated request, or
-     - Resource principal-based access if the DevOps project resides in the same tenancy/compartment.
-   - **Local JSON template**: Use `credentials_template.json` (kept out of source control via `.gitignore`) to populate `walletPassword`, `adbAdminPassword`, and `sqlclConnectString`. Upload the filled JSON (e.g., `credentials_local.json`) to the same private bucket and download it in the pipeline with `oci os object get ... | jq -r '.walletPassword'` before unzipping the wallet.
-2. **Provision OCI DevOps Resources**
-   - Create a Build Pipeline tied to the Code Repo; configure a build runner shape that can install SQLcl.
-   - Add pipeline parameters (environment name, schema targets) and stages for SQLcl + APEX export/import.
-3. **Script Deploy Steps**
-   - `scripts/deploy_control_schema.sh`: runs SQLcl to apply `/db/control/*.sql`.
-   - `scripts/deploy_apex_app.sh`: wraps `apex export/import` commands for `/apex/` artifacts.
-4. **Testing & Promotion**
-   - Configure a Manual or Git-trigged pipeline run; validate logs show wallet download, SQLcl execution, and APEX import success.
-   - Document rollback/reset procedures (e.g., rerun baseline scripts, drop/recreate schemas).
+### 11. Automation Workflow (n8n on OCI Compute)
+1. **Compute VM Prerequisites**
+   - Provision an OCI Compute VM in the same VCN/subnet as ATP. Install n8n (Docker or Node.js) plus SQLcl, OCI CLI, `jq`, and unzip.
+   - Configure environment variables or n8n credentials for OCI Auth Token (Object Storage read), wallet password, and SQLcl connect string.
+2. **Workflow Outline (n8n nodes)**
+   1. **Manual Trigger / HTTP Webhook** – entry point to start deployments.
+   2. **Function Node** – set variables (bucket name, object paths, repo directory).
+   3. **HTTP Request Node** (OCI Object Storage GET) – download `adb_credentials.json` to local filesystem (use auth token header).
+   4. **HTTP Request Node** – download `Wallet_SBAITST.zip` similarly.
+   5. **Execute Command Node** – run shell script to parse credentials and unzip wallet:
+      ```bash
+      WALLET_PWD=$(jq -r '.walletPassword' adb_credentials.json)
+      SQLCL_CONNECT=$(jq -r '.sqlclConnectString' adb_credentials.json)
+      unzip -P "$WALLET_PWD" Wallet_SBAITST.zip -d wallet
+      export TNS_ADMIN=$PWD/wallet
+      export SQLCL_CONNECT
+      ```
+   6. **Execute Command Node** – run `scripts/deploy_control_schema.sh` (ensure repo mounted on VM).
+   7. **Execute Command Node** – run `scripts/deploy_apex_app.sh`.
+   8. **Notification Node** (email/Teams/Slack) – summarise success/failure with log snippets.
+3. **Credential Handling**
+   - Use n8n’s credential vault for Object Storage auth token and database connect string if you prefer not to store them in files.
+   - Rotate tokens manually (or via scheduled workflow) since Vault integration isn’t available.
+4. **Logging & Rollback**
+   - n8n stores execution history; export logs or push to OCI Logging if desired.
+   - Rollback procedure remains manual (rerun baseline scripts, drop tenant schemas, etc.).
 5. **Future Enhancements**
-   - Optional Terraform/Resource Manager stack for infrastructure drift control.
-   - Hook pipeline webhooks so APEX can trigger tenant provisioning jobs.
+   - Add schedules for nightly resets, include branching for tenant-specific manifests, or call APEX apps via REST for health checks.
 
-_This guide remains the living runbook—update after each milestone to capture lessons learned, revised timelines, and new demo packs._
+_This guide remains the living runbook—update after each milestone (whether automation lives in n8n, DevOps, or another orchestrator)._ 
+
+### 12. Immediate Next Steps
+1. Install Docker Desktop (or Docker Engine) on the OCI Windows VM that will host n8n.
+2. Deploy the official n8n Docker container on that VM (bind-mount the repo path so `scripts/` is accessible).
+3. Once n8n is up, import or build the workflow described above and test Object Storage access + SQLcl connectivity.
+4. Resume configuration/testing after rest.
