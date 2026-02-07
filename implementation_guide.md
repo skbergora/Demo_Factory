@@ -132,4 +132,36 @@ Deliver a reusable, ATP-first Oracle APEX demo factory—augmented with an Oracl
 - Parallel OAC task: finalize mirrored dataset naming + semantic model designs.
 - Pre-stage tenant DDL templates to accelerate Phase 2 once control plane is stable.
 
+### 10. Source Control Runbook (OCI DevOps + GitHub)
+- **Local repo path**: `/Users/shandybergeron/Library/CloudStorage/OneDrive-OracleCorporation/_Oracle/Demos/Automated_Demo/Demo_Factory_Repo/demo-factory-repo`.
+- **Primary remote (origin)**: OCI DevOps Code Repo (used by VS Code’s Git integration). Workflow: stage/commit from VS Code, then “Sync Changes” to push to OCI DevOps.
+- **Secondary remote (github)**: GitHub mirror for broader collaboration. After syncing to OCI DevOps, run `git push github main` (or your active branch) from the same directory to propagate changes.
+- **Credential note**: OCI DevOps requires username format `Tenancy/Federation/User` plus Auth Token. GitHub can use personal access tokens or SSH as desired.
+
+> _Keep sensitive OCI configuration files private if the GitHub repo is public. Consider `.gitignore` entries for wallets or secrets._
+
+### 11. DevOps Pipeline Next Steps
+1. **Define Secrets & Artifacts**
+   - **Vault secrets** (Vault already created):
+     - `ADB_ADMIN_PASSWORD` – encrypted password for `DEMO_FACTORY_ADMIN` (use plain text secret type; mark rotation policy per security rules).
+     - `ADB_SQLCL_CONNECT` – `user/password@hostname:port/service_name` or EZConnect string if you prefer retrieving one secret for SQLcl.
+     - `OBJECT_STORAGE_AUTH` – optional JSON/API key for accessing Object Storage if the pipeline can’t use resource principals.
+   - **Uploading secrets**: In OCI Console → Vault → Secrets → “Create Secret,” pick the previously created master key, provide a base64/UTF-8 string (e.g., the admin password), and store each as a separate secret OCID to reference in DevOps. Note each secret OCID in this guide for pipeline wiring.
+   - **Wallet storage**: Upload `Wallet_SBAITST.zip` to a private Object Storage bucket (e.g., `demo-factory-artifacts/wallets/Wallet_SBAITST.zip`) or to the DevOps Artifact Registry. Record the Object Storage URI and configure DevOps pipeline stages with either:
+     - Object Storage connection + pre-authenticated request, or
+     - Resource principal-based access if the DevOps project resides in the same tenancy/compartment.
+   - **Local JSON template**: Use `credentials_template.json` (kept out of source control via `.gitignore`) to populate `walletPassword`, `adbAdminPassword`, and `sqlclConnectString`. Upload the filled JSON (e.g., `credentials_local.json`) to the same private bucket and download it in the pipeline with `oci os object get ... | jq -r '.walletPassword'` before unzipping the wallet.
+2. **Provision OCI DevOps Resources**
+   - Create a Build Pipeline tied to the Code Repo; configure a build runner shape that can install SQLcl.
+   - Add pipeline parameters (environment name, schema targets) and stages for SQLcl + APEX export/import.
+3. **Script Deploy Steps**
+   - `scripts/deploy_control_schema.sh`: runs SQLcl to apply `/db/control/*.sql`.
+   - `scripts/deploy_apex_app.sh`: wraps `apex export/import` commands for `/apex/` artifacts.
+4. **Testing & Promotion**
+   - Configure a Manual or Git-trigged pipeline run; validate logs show wallet download, SQLcl execution, and APEX import success.
+   - Document rollback/reset procedures (e.g., rerun baseline scripts, drop/recreate schemas).
+5. **Future Enhancements**
+   - Optional Terraform/Resource Manager stack for infrastructure drift control.
+   - Hook pipeline webhooks so APEX can trigger tenant provisioning jobs.
+
 _This guide remains the living runbook—update after each milestone to capture lessons learned, revised timelines, and new demo packs._

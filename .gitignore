@@ -1,0 +1,2 @@
+# Ignore local credential templates containing secrets
+credentials_local.json
