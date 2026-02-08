@@ -1,0 +1,364 @@
+{
+    "name":  "OCI Connectivity Validation (Object Storage + APEX/ORDS + AI + ADB TCP)",
+    "nodes":  [
+                  {
+                      "parameters":  {
+
+                                     },
+                      "id":  "manualTrigger",
+                      "name":  "Manual Trigger",
+                      "type":  "n8n-nodes-base.manualTrigger",
+                      "typeVersion":  1,
+                      "position":  [
+                                       260,
+                                       220
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "values":  {
+                                                        "string":  [
+                                                                       {
+                                                                           "name":  "ociProfile",
+                                                                           "value":  "DEFAULT"
+                                                                       },
+                                                                       {
+                                                                           "name":  "osEndpoint",
+                                                                           "value":  "https://orasenatdpublicsector05.objectstorage.us-chicago-1.oci.customer-oci.com"
+                                                                       },
+                                                                       {
+                                                                           "name":  "osNamespace",
+                                                                           "value":  "orasenatdpublicsector05"
+                                                                       },
+                                                                       {
+                                                                           "name":  "osBucket",
+                                                                           "value":  "demo-factory-assets"
+                                                                       },
+                                                                       {
+                                                                           "name":  "osPrefix",
+                                                                           "value":  "backups/n8n/"
+                                                                       },
+                                                                       {
+                                                                           "name":  "apexBaseUrl",
+                                                                           "value":  "https://cdxjobgw.adb.us-chicago-1.oraclecloudapps.com"
+                                                                       },
+                                                                       {
+                                                                           "name":  "apexHealthPath",
+                                                                           "value":  "/ords/apex"
+                                                                       },
+                                                                       {
+                                                                           "name":  "adbHost",
+                                                                           "value":  "cdxjobgw.adb.us-chicago-1.oraclecloud.com"
+                                                                       },
+                                                                       {
+                                                                           "name":  "genAiEndpoint",
+                                                                           "value":  "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+                                                                       },
+                                                                       {
+                                                                           "name":  "genAiPath",
+                                                                           "value":  "/20231130/actions/chat"
+                                                                       },
+                                                                       {
+                                                                           "name":  "genAiCompartmentId",
+                                                                           "value":  "ocid1.compartment.oc1..aaaaaaaazkaj45m42pbtzwbzobgahd6js6ysowuq2zxwxjpvvzgwco3qvygq"
+                                                                       },
+                                                                       {
+                                                                           "name":  "genAiModelId",
+                                                                           "value":  "openai.gpt-oss-120b"
+                                                                       },
+                                                                       {
+                                                                           "name":  "genAiMessage",
+                                                                           "value":  "n8n connectivity validation ping"
+                                                                       }
+                                                                   ],
+                                                        "number":  [
+                                                                       {
+                                                                           "name":  "adbPort",
+                                                                           "value":  1522
+                                                                       }
+                                                                   ],
+                                                        "boolean":  [
+                                                                        {
+                                                                            "name":  "runAiCall",
+                                                                            "value":  false
+                                                                        }
+                                                                    ]
+                                                    },
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "id":  "setConfig",
+                      "name":  "Config",
+                      "type":  "n8n-nodes-base.set",
+                      "typeVersion":  2,
+                      "position":  [
+                                       500,
+                                       220
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const fs = require(\u0027fs\u0027);\nconst path = require(\u0027path\u0027);\n\nfunction parseIni(text) {\n  const result = {};\n  let section = null;\n\n  const lines = text.split(/\\r?\\n/);\n  for (let i = 0; i \u003c lines.length; i++) {\n    const rawLine = lines[i];\n    const line = rawLine.trim();\n\n    if (!line) continue;\n    if (line.startsWith(\u0027#\u0027) || line.startsWith(\u0027;\u0027)) continue;\n\n    const m = line.match(/^\\[(.+?)\\]$/);\n    if (m) {\n      section = m[1];\n      if (!result[section]) result[section] = {};\n      continue;\n    }\n\n    const idx = line.indexOf(\u0027=\u0027);\n    if (idx === -1) continue;\n\n    const k = line.slice(0, idx).trim();\n    const v = line.slice(idx + 1).trim();\n\n    if (!section) section = \u0027DEFAULT\u0027;\n    if (!result[section]) result[section] = {};\n    result[section][k] = v;\n  }\n\n  return result;\n}\n\nfunction stripQuotes(s) {\n  let v = String(s || \u0027\u0027).trim();\n  if (!v) return v;\n  if ((v.startsWith(\u0027\"\u0027) \u0026\u0026 v.endsWith(\u0027\"\u0027)) || (v.startsWith(\"\u0027\") \u0026\u0026 v.endsWith(\"\u0027\"))) {\n    v = v.slice(1, -1);\n  }\n  return v;\n}\n\nfunction looksLikeWindowsAbs(p) {\n  const v = stripQuotes(p);\n  // C:\\... or C:/...\n  return /^[A-Za-z]:\\\\/.test(v) || /^[A-Za-z]:\\//.test(v) || /^[A-Za-z]:$/.test(v);\n}\n\nfunction findKeyFile(configDir, keyFileValue) {\n  const raw = stripQuotes(keyFileValue);\n\n  // If config points at a Windows path, map to the mounted dir by basename.\n  if (looksLikeWindowsAbs(raw)) {\n    const candidate = path.join(configDir, path.basename(raw));\n    if (fs.existsSync(candidate)) return candidate;\n  }\n\n  // Absolute POSIX path\n  if (path.isAbsolute(raw)) {\n    if (fs.existsSync(raw)) return raw;\n  }\n\n  // Relative path inside config dir\n  if (raw) {\n    const rel = path.join(configDir, raw);\n    if (fs.existsSync(rel)) return rel;\n  }\n\n  // Fallbacks: common filenames in the mounted directory\n  const common = [\n    path.join(configDir, \u0027oci_api_key.pem\u0027),\n    path.join(configDir, \u0027oci_api_key_private.pem\u0027),\n  ];\n  for (let i = 0; i \u003c common.length; i++) {\n    if (fs.existsSync(common[i])) return common[i];\n  }\n\n  // Last resort: pick the first non-public pem\n  try {\n    const pemFiles = fs.readdirSync(configDir)\n      .filter((n) =\u003e n.toLowerCase().endsWith(\u0027.pem\u0027))\n      .filter((n) =\u003e !n.toLowerCase().includes(\u0027public\u0027))\n      .map((n) =\u003e path.join(configDir, n));\n    if (pemFiles.length \u003e 0) return pemFiles[0];\n  } catch (_) {}\n\n  return \u0027\u0027;\n}\n\nconst item = $input.first().json;\nconst profile = String(item.ociProfile || \u0027DEFAULT\u0027).trim();\n\nconst configPath = \u0027/home/node/.oci/config\u0027;\nconst configDir = path.dirname(configPath);\n\nif (!fs.existsSync(configPath)) {\n  throw new Error(\u0027Missing OCI config at \u0027 + configPath + \u0027. Ensure C:/Users/opc/.oci is mounted to /home/node/.oci.\u0027);\n}\n\nconst ini = parseIni(fs.readFileSync(configPath, \u0027utf8\u0027));\nconst cfg = ini[profile];\nif (!cfg) {\n  throw new Error(\u0027OCI profile \u0027 + profile + \u0027 not found in \u0027 + configPath + \u0027. Available: \u0027 + Object.keys(ini).join(\u0027, \u0027));\n}\n\nconst required = [\u0027tenancy\u0027, \u0027user\u0027, \u0027fingerprint\u0027, \u0027key_file\u0027, \u0027region\u0027];\nfor (let i = 0; i \u003c required.length; i++) {\n  const k = required[i];\n  if (!cfg[k]) throw new Error(\u0027Missing \u0027 + k + \u0027 in OCI profile \u0027 + profile + \u0027 in \u0027 + configPath);\n}\n\nconst keyFile = findKeyFile(configDir, cfg.key_file);\nif (!keyFile) {\n  throw new Error(\u0027Private key file not found. key_file value in config was: \u0027 + stripQuotes(cfg.key_file) + \u0027. Ensure the PEM exists under \u0027 + configDir + \u0027.\u0027);\n}\n\nreturn [{\n  json: {\n    ...item,\n    oci: {\n      profile,\n      tenancyOcid: cfg.tenancy,\n      userOcid: cfg.user,\n      fingerprint: cfg.fingerprint,\n      region: cfg.region,\n      keyFile,\n      keyId: cfg.tenancy + \u0027/\u0027 + cfg.user + \u0027/\u0027 + cfg.fingerprint,\n    },\n  },\n}];"
+                                     },
+                      "id":  "loadOciConfig",
+                      "name":  "Load OCI Config",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       760,
+                                       220
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const fs = require(\u0027fs\u0027);\nconst crypto = require(\u0027crypto\u0027);\nconst { URL } = require(\u0027url\u0027);\n\nfunction signOciRequest({ method, url, keyFile, keyId, extraHeaders }) {\n  const privateKeyPem = fs.readFileSync(keyFile, \u0027utf8\u0027);\n\n  const u = new URL(url);\n  const host = u.host;\n  const pathAndQuery = u.pathname + (u.search || \u0027\u0027);\n  const date = new Date().toUTCString();\n\n  const headersToSign = [\n    [\u0027date\u0027, date],\n    [\u0027(request-target)\u0027, `${method.toLowerCase()} ${pathAndQuery}`],\n    [\u0027host\u0027, host],\n  ];\n\n  const signingString = headersToSign.map(([k, v]) =\u003e `${k}: ${v}`).join(\u0027\\n\u0027);\n  const signature = crypto.createSign(\u0027RSA-SHA256\u0027).update(signingString).sign(privateKeyPem, \u0027base64\u0027);\n  const authorization = `Signature version=\"1\",keyId=\"${keyId}\",algorithm=\"rsa-sha256\",headers=\"date (request-target) host\",signature=\"${signature}\"`;\n\n  const headers = {\n    date,\n    host,\n    authorization,\n    ...(extraHeaders || {}),\n  };\n\n  return { url, headers };\n}\n\nconst item = $input.first().json;\nconst { osEndpoint, osNamespace, osBucket, osPrefix } = item;\n\nif (!osEndpoint || !osNamespace || !osBucket) {\n  throw new Error(\u0027Missing osEndpoint/osNamespace/osBucket in Config node\u0027);\n}\n\nconst base = osEndpoint.replace(/\\/$/, \u0027\u0027);\nconst prefix = (osPrefix || \u0027\u0027).replace(/^\\//, \u0027\u0027);\nconst url = `${base}/n/${encodeURIComponent(osNamespace)}/b/${encodeURIComponent(osBucket)}/o?prefix=${encodeURIComponent(prefix)}\u0026limit=1`;\n\nconst signed = signOciRequest({\n  method: \u0027GET\u0027,\n  url,\n  keyFile: item.oci.keyFile,\n  keyId: item.oci.keyId,\n});\n\nreturn [{ json: { ...item, osRequest: signed } }];"
+                                     },
+                      "id":  "buildOsRequest",
+                      "name":  "Build Signed OS Request",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       1030,
+                                       220
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "method":  "GET",
+                                         "url":  "={{$json.osRequest.url}}",
+                                         "sendHeaders":  true,
+                                         "headerParameters":  {
+                                                                  "parameters":  [
+                                                                                     {
+                                                                                         "name":  "date",
+                                                                                         "value":  "={{$json.osRequest.headers.date}}"
+                                                                                     },
+                                                                                     {
+                                                                                         "name":  "host",
+                                                                                         "value":  "={{$json.osRequest.headers.host}}"
+                                                                                     },
+                                                                                     {
+                                                                                         "name":  "authorization",
+                                                                                         "value":  "={{$json.osRequest.headers.authorization}}"
+                                                                                     }
+                                                                                 ]
+                                                              },
+                                         "options":  {
+                                                         "response":  {
+                                                                          "responseFormat":  "json"
+                                                                      }
+                                                     }
+                                     },
+                      "id":  "httpOsList",
+                      "name":  "OS List Objects (1)",
+                      "type":  "n8n-nodes-base.httpRequest",
+                      "typeVersion":  4,
+                      "position":  [
+                                       1290,
+                                       220
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const input = $input.first().json;\n\n// Object Storage list objects responses can appear in a few shapes depending on the node/settings:\n// 1) { data: { objects: [...] } }\n// 2) { objects: [...] }\n// 3) [ { objects: [...] } ]\n\nlet body = input;\nif (Array.isArray(body)) body = body[0] || {};\n\nlet objects = null;\nif (body \u0026\u0026 body.data \u0026\u0026 Array.isArray(body.data.objects)) objects = body.data.objects;\nelse if (body \u0026\u0026 Array.isArray(body.objects)) objects = body.objects;\n\nconst ok = Array.isArray(objects);\nconst count = ok ? objects.length : null;\nconst first = ok \u0026\u0026 count \u003e 0 ? (objects[0].name || null) : null;\nconst nextStartWith = body \u0026\u0026 body.nextStartWith ? body.nextStartWith : null;\n\nreturn [{\n  json: {\n    osValidation: {\n      ok,\n      objectCountReturned: count,\n      firstObjectName: first,\n      nextStartWith,\n    }\n  }\n}];"
+                                     },
+                      "id":  "summarizeOs",
+                      "name":  "Summarize OS Result",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       1550,
+                                       220
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const https = require(\u0027https\u0027);\nconst { URL } = require(\u0027url\u0027);\n\nconst cfg = $node[\u0027Config\u0027].json;\nconst base = String(cfg.apexBaseUrl || \u0027\u0027).trim().replace(/\\/$/, \u0027\u0027);\nconst healthPath = String(cfg.apexHealthPath || \u0027\u0027).trim();\n\nif (!base || base.includes(\u0027\u003c\u0027) || !healthPath || healthPath.includes(\u0027\u003c\u0027)) {\n  return [{ json: { apexOrdsValidation: { ok: false, error: \u0027Set apexBaseUrl and apexHealthPath in Config node.\u0027 } } }];\n}\n\nconst url = base + (healthPath.startsWith(\u0027/\u0027) ? healthPath : \u0027/\u0027 + healthPath);\nconst u = new URL(url);\n\nconst timeoutMs = 10000;\nconst result = await new Promise((resolve) =\u003e {\n  const req = https.request({\n    method: \u0027GET\u0027,\n    hostname: u.hostname,\n    path: u.pathname + u.search,\n    headers: {\n      \u0027User-Agent\u0027: \u0027n8n-connectivity-validation\u0027,\n      \u0027Accept\u0027: \u0027text/html,application/json;q=0.9,*/*;q=0.8\u0027\n    },\n  }, (res) =\u003e {\n    const chunks = [];\n    res.on(\u0027data\u0027, (d) =\u003e chunks.push(d));\n    res.on(\u0027end\u0027, () =\u003e {\n      const text = Buffer.concat(chunks).toString(\u0027utf8\u0027);\n      resolve({\n        statusCode: res.statusCode,\n        location: res.headers.location || null,\n        bodyPreview: text.slice(0, 300),\n      });\n    });\n  });\n\n  req.setTimeout(timeoutMs, () =\u003e {\n    req.destroy(new Error(\u0027timeout after \u0027 + timeoutMs + \u0027ms\u0027));\n  });\n\n  req.on(\u0027error\u0027, (err) =\u003e resolve({ statusCode: 0, error: err.message }));\n  req.end();\n});\n\n// For connectivity: 2xx, 3xx, and common auth statuses indicate reachability.\nconst sc = result.statusCode || 0;\nconst ok = (sc \u003e= 200 \u0026\u0026 sc \u003c 400) || sc === 401 || sc === 403;\n\nreturn [{\n  json: {\n    apexOrdsHttp: {\n      url,\n      ...result,\n    },\n    apexOrdsValidation: {\n      ok,\n      statusCode: sc,\n      location: result.location || null,\n      note: ok ? \u0027Reachable (redirect/auth is OK for validation).\u0027 : \u0027Not reachable or unexpected status.\u0027\n    }\n  }\n}];"
+                                     },
+                      "id":  "httpApexHealth",
+                      "name":  "APEX/ORDS HTTP Check",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       1290,
+                                       420
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const j = $input.first().json;\nif (j.apexOrdsValidation) return [{ json: j }];\nreturn [{ json: { apexOrdsValidation: { ok: false, error: \u0027Missing apexOrdsValidation\u0027 } } }];"
+                                     },
+                      "id":  "summarizeApex",
+                      "name":  "Summarize APEX/ORDS",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       1550,
+                                       420
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const net = require(\u0027net\u0027);\n\nconst cfg = $node[\u0027Config\u0027].json;\nconst host = cfg.adbHost;\nconst port = Number(cfg.adbPort || 1522);\n\nif (!host || host.includes(\u0027\u003c\u0027)) {\n  return [{ json: { adbTcpValidation: { ok: false, error: \u0027Set adbHost in Config node to your ADB hostname.\u0027 } } }];\n}\n\nconst timeoutMs = 5000;\nconst start = Date.now();\n\nconst result = await new Promise((resolve) =\u003e {\n  const socket = net.createConnection({ host, port });\n  const done = (ok, extra) =\u003e {\n    try { socket.destroy(); } catch (_) {}\n    resolve({ ok, ...extra });\n  };\n  socket.setTimeout(timeoutMs);\n  socket.on(\u0027connect\u0027, () =\u003e done(true, { ms: Date.now() - start }));\n  socket.on(\u0027timeout\u0027, () =\u003e done(false, { error: `timeout after ${timeoutMs}ms` }));\n  socket.on(\u0027error\u0027, (err) =\u003e done(false, { error: err.message }));\n});\n\nreturn [{ json: { adbTcpValidation: result } }];\n"
+                                     },
+                      "id":  "adbTcpCheck",
+                      "name":  "ADB TCP Check (1522)",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       1290,
+                                       620
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const fs = require(\u0027fs\u0027);\nconst crypto = require(\u0027crypto\u0027);\nconst { URL } = require(\u0027url\u0027);\n\nfunction sha256Base64(input) {\n  return crypto.createHash(\u0027sha256\u0027).update(input, \u0027utf8\u0027).digest(\u0027base64\u0027);\n}\n\nfunction signOciRequest({ method, url, keyFile, keyId, headersToSign }) {\n  const privateKeyPem = fs.readFileSync(keyFile, \u0027utf8\u0027);\n\n  const u = new URL(url);\n  const host = u.host;\n  const pathAndQuery = u.pathname + (u.search || \u0027\u0027);\n\n  const signingParts = headersToSign.order.map((name) =\u003e {\n    if (name === \u0027(request-target)\u0027) return `(request-target): ${method.toLowerCase()} ${pathAndQuery}`;\n    if (name === \u0027host\u0027) return `host: ${host}`;\n    return `${name}: ${headersToSign.values[name]}`;\n  });\n\n  const signingString = signingParts.join(\u0027\\n\u0027);\n  const signature = crypto.createSign(\u0027RSA-SHA256\u0027).update(signingString).sign(privateKeyPem, \u0027base64\u0027);\n  const headersStr = headersToSign.order.join(\u0027 \u0027);\n  const authorization = `Signature version=\"1\",keyId=\"${keyId}\",algorithm=\"rsa-sha256\",headers=\"${headersStr}\",signature=\"${signature}\"`;\n\n  return {\n    url,\n    headers: {\n      host,\n      authorization,\n      ...headersToSign.values,\n    }\n  };\n}\n\nconst oci = $node[\u0027Load OCI Config\u0027].json.oci;\nconst cfg = $node[\u0027Config\u0027].json;\n\nif (!cfg.runAiCall) {\n  return [{ json: { aiValidation: { skipped: true, note: \u0027Set runAiCall=true to enable Generative AI validation.\u0027 } } }];\n}\n\nconst endpoint = (cfg.genAiEndpoint || \u0027\u0027).trim();\nconst path = (cfg.genAiPath || \u0027\u0027).trim();\nconst compartmentId = (cfg.genAiCompartmentId || \u0027\u0027).trim();\nconst modelId = (cfg.genAiModelId || \u0027\u0027).trim();\nconst message = (cfg.genAiMessage || \u0027ping\u0027).toString();\n\nif (!endpoint || endpoint.includes(\u0027\u003c\u0027) || !path || path.includes(\u0027\u003c\u0027)) {\n  return [{ json: { aiValidation: { ok: false, error: \u0027Set genAiEndpoint and genAiPath in Config node.\u0027 } } }];\n}\nif (!compartmentId || compartmentId.includes(\u0027\u003c\u0027)) {\n  return [{ json: { aiValidation: { ok: false, error: \u0027Set genAiCompartmentId (a compartment OCID) in Config node.\u0027 } } }];\n}\nif (!modelId || modelId.includes(\u0027\u003c\u0027)) {\n  return [{ json: { aiValidation: { ok: false, error: \u0027Set genAiModelId in Config node (example: cohere.command-r-plus-08-2024).\u0027 } } }];\n}\n\nconst base = endpoint.replace(/\\/$/, \u0027\u0027);\nconst p = path.startsWith(\u0027/\u0027) ? path : `/${path}`;\nconst url = `${base}${p}`;\n\n// GENERIC chat format expects messages[].\n// Reference: OCI Generative AI Inference /chat (GENERIC) examples.\nconst bodyObj = {\n  compartmentId,\n  servingMode: { servingType: \u0027ON_DEMAND\u0027, modelId },\n  chatRequest: {\n    apiFormat: \u0027GENERIC\u0027,\n    isStream: false,\n    maxTokens: 64,\n    temperature: 0,\n    messages: [\n      {\n        role: \u0027USER\u0027,\n        content: [{ type: \u0027TEXT\u0027, text: message }],\n      },\n    ],\n  },\n};\n\nconst body = JSON.stringify(bodyObj);\nconst date = new Date().toUTCString();\nconst contentType = \u0027application/json\u0027;\nconst contentLength = Buffer.byteLength(body, \u0027utf8\u0027);\nconst xContentSha256 = sha256Base64(body);\n\nconst headersToSign = {\n  order: [\u0027date\u0027, \u0027(request-target)\u0027, \u0027host\u0027, \u0027content-length\u0027, \u0027content-type\u0027, \u0027x-content-sha256\u0027],\n  values: {\n    date,\n    \u0027content-type\u0027: contentType,\n    \u0027content-length\u0027: String(contentLength),\n    \u0027x-content-sha256\u0027: xContentSha256,\n  },\n};\n\nconst signed = signOciRequest({\n  method: \u0027POST\u0027,\n  url,\n  keyFile: oci.keyFile,\n  keyId: oci.keyId,\n  headersToSign,\n});\n\nreturn [{ json: { aiRequest: signed, aiBody: body } }];"
+                                     },
+                      "id":  "buildAiRequest",
+                      "name":  "Build Signed AI Request",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       1030,
+                                       820
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const https = require(\u0027https\u0027);\nconst { URL } = require(\u0027url\u0027);\n\nconst input = $input.first().json;\nif (input.aiValidation \u0026\u0026 input.aiValidation.skipped) {\n  return [{ json: input }];\n}\n\nconst url = input.aiRequest \u0026\u0026 input.aiRequest.url;\nconst headers = input.aiRequest \u0026\u0026 input.aiRequest.headers;\nconst body = input.aiBody;\n\nif (!url || !headers || !body) {\n  return [{ json: { aiValidation: { ok: false, error: \u0027Missing aiRequest/aiBody (configure Config node and enable runAiCall).\u0027 } } }];\n}\n\nconst u = new URL(url);\n\nconst result = await new Promise((resolve) =\u003e {\n  const req = https.request({\n    method: \u0027POST\u0027,\n    hostname: u.hostname,\n    path: u.pathname + u.search,\n    headers,\n  }, (res) =\u003e {\n    const chunks = [];\n    res.on(\u0027data\u0027, (d) =\u003e chunks.push(d));\n    res.on(\u0027end\u0027, () =\u003e {\n      const text = Buffer.concat(chunks).toString(\u0027utf8\u0027);\n      let json = null;\n      try { json = JSON.parse(text); } catch (_) {}\n      resolve({ statusCode: res.statusCode, bodyText: text, bodyJson: json });\n    });\n  });\n  req.on(\u0027error\u0027, (err) =\u003e resolve({ statusCode: 0, error: err.message }));\n  req.write(body);\n  req.end();\n});\n\nreturn [{ json: { aiHttpResult: result } }];"
+                                     },
+                      "id":  "httpAiCall",
+                      "name":  "OCI AI HTTP Call",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       1290,
+                                       820
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const j = $input.first().json;\n\nif (j.aiValidation \u0026\u0026 j.aiValidation.skipped) {\n  return [{ json: j }];\n}\n\nconst r = j.aiHttpResult;\nif (!r) {\n  return [{ json: { aiValidation: { ok: false, error: \u0027Missing aiHttpResult\u0027 } } }];\n}\n\nconst ok = r.statusCode \u003e= 200 \u0026\u0026 r.statusCode \u003c 300;\nreturn [{\n  json: {\n    aiValidation: {\n      ok,\n      statusCode: r.statusCode,\n      error: r.error || null,\n      // Keep it small; full response may contain model output.\n      responsePreview: r.bodyJson ? JSON.stringify(r.bodyJson).slice(0, 500) : (r.bodyText || \u0027\u0027).slice(0, 500),\n    }\n  }\n}];"
+                                     },
+                      "id":  "summarizeAi",
+                      "name":  "Summarize AI",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       1550,
+                                       820
+                                   ]
+                  }
+              ],
+    "connections":  {
+                        "Manual Trigger":  {
+                                               "main":  [
+                                                            [
+                                                                {
+                                                                    "node":  "Config",
+                                                                    "type":  "main",
+                                                                    "index":  0
+                                                                }
+                                                            ]
+                                                        ]
+                                           },
+                        "Config":  {
+                                       "main":  [
+                                                    [
+                                                        {
+                                                            "node":  "Load OCI Config",
+                                                            "type":  "main",
+                                                            "index":  0
+                                                        },
+                                                        {
+                                                            "node":  "APEX/ORDS HTTP Check",
+                                                            "type":  "main",
+                                                            "index":  0
+                                                        },
+                                                        {
+                                                            "node":  "ADB TCP Check (1522)",
+                                                            "type":  "main",
+                                                            "index":  0
+                                                        }
+                                                    ]
+                                                ]
+                                   },
+                        "Load OCI Config":  {
+                                                "main":  [
+                                                             [
+                                                                 {
+                                                                     "node":  "Build Signed OS Request",
+                                                                     "type":  "main",
+                                                                     "index":  0
+                                                                 },
+                                                                 {
+                                                                     "node":  "Build Signed AI Request",
+                                                                     "type":  "main",
+                                                                     "index":  0
+                                                                 }
+                                                             ]
+                                                         ]
+                                            },
+                        "Build Signed OS Request":  {
+                                                        "main":  [
+                                                                     [
+                                                                         {
+                                                                             "node":  "OS List Objects (1)",
+                                                                             "type":  "main",
+                                                                             "index":  0
+                                                                         }
+                                                                     ]
+                                                                 ]
+                                                    },
+                        "OS List Objects (1)":  {
+                                                    "main":  [
+                                                                 [
+                                                                     {
+                                                                         "node":  "Summarize OS Result",
+                                                                         "type":  "main",
+                                                                         "index":  0
+                                                                     }
+                                                                 ]
+                                                             ]
+                                                },
+                        "APEX/ORDS HTTP Check":  {
+                                                     "main":  [
+                                                                  [
+                                                                      {
+                                                                          "node":  "Summarize APEX/ORDS",
+                                                                          "type":  "main",
+                                                                          "index":  0
+                                                                      }
+                                                                  ]
+                                                              ]
+                                                 },
+                        "Build Signed AI Request":  {
+                                                        "main":  [
+                                                                     [
+                                                                         {
+                                                                             "node":  "OCI AI HTTP Call",
+                                                                             "type":  "main",
+                                                                             "index":  0
+                                                                         }
+                                                                     ]
+                                                                 ]
+                                                    },
+                        "OCI AI HTTP Call":  {
+                                                 "main":  [
+                                                              [
+                                                                  {
+                                                                      "node":  "Summarize AI",
+                                                                      "type":  "main",
+                                                                      "index":  0
+                                                                  }
+                                                              ]
+                                                          ]
+                                             }
+                    },
+    "active":  false,
+    "settings":  {
+                     "executionTimeout":  120
+                 },
+    "versionId":  "00000000-0000-0000-0000-000000000000"
+}
