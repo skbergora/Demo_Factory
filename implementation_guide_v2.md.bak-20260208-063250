@@ -1,0 +1,550 @@
+﻿This guide is the task-oriented build plan for the Demo Factory. It breaks work down by area of focus (Database, ORDS, APEX, n8n, Object Storage, AI, Ops/CI/CD, OAC) with concrete deliverables and acceptance criteria.
+
+Reference docs:
+
+- Vision/architecture: `D:\Demo_Factory\oracle_apex_autonomous_demo_factory.md`
+- E2E orchestration (APEX parent app + n8n): `D:\Demo_Factory\end_to_end_apex_n8n_process.md`
+- n8n deployment/ops/connectivity method: `D:\n8n_backups\N8N-Management.md`
+
+## 0. Current State (Baseline)
+
+Infrastructure exists but is mostly "shell":
+
+- Autonomous Database exists
+- APEX workspace exists
+- Object Storage bucket exists
+- n8n exists, backed up nightly, and OCI connectivity methods are validated
+
+What is not built yet:
+
+- Control-plane tables/packages in `DEMO_FACTORY_ADMIN`
+- ORDS REST module endpoints for Demo Factory operations
+- APEX Control Plane app pages/flows
+- n8n production workflows for provision/reset/drop (beyond connectivity validation)
+
+## 1. Guiding Decisions (Do Not Re-litigate)
+
+1. Connectivity standard for future workflows:
+   - OCI APIs via request signing in n8n Code nodes using `/home/node/.oci` mount.
+   - APEX/ORDS via HTTPS calls.
+   - ADB validated via TCP reachability check; DB actions executed via ORDS/PLSQL.
+2. Synthetic-only data, no customer data ingestion.
+3. MVP avoids direct DB wallet connections from n8n. Use ORDS APIs instead.
+
+## 2. Workstreams And Tasks
+
+### A. Database Control Plane (DEMO_FACTORY_ADMIN)
+
+Goal: Establish the system-of-record for tenants and runs, and implement provisioning logic in PL/SQL with auditability.
+
+Deliverables:
+
+- Tables (minimum):
+  - `TENANTS`
+  - `RUNS`
+  - `RUN_STEPS`
+  - `MANIFESTS` (optional if manifest stored only in RUNS)
+- Packages (minimum):
+  - `PKG_DEMO_FACTORY_RUNS`
+  - `PKG_DEMO_FACTORY_PROVISION`
+  - `PKG_DEMO_FACTORY_RESET`
+  - `PKG_DEMO_FACTORY_DROP`
+
+Tasks:
+
+1. Define the manifest schema (JSON) and validation rules.
+2. Implement DDL for control tables and indexes.
+3. Implement run state machine:
+   - statuses: `QUEUED`, `RUNNING`, `FAILED`, `SUCCEEDED`
+   - step statuses: `PENDING`, `RUNNING`, `FAILED`, `SUCCEEDED`, `SKIPPED`
+4. Implement idempotency guardrails:
+   - unique `run_id`
+   - step upserts by `(run_id, step_key)`
+5. Implement provisioning skeleton (no AI yet):
+   - derive `tenant_key` and `schema_name` from customer label + date
+   - create tenant schema/user
+   - create baseline tables/views
+   - seed minimal synthetic dataset
+6. Implement reset/drop skeleton.
+7. Write a "smoke test" PL/SQL procedure that provisions a tiny tenant end-to-end.
+
+
+#### ORDS-001 Implementation Notes (Module Scaffold)
+##### ORDS-001 Step-by-Step (REST Workshop)
+
+Goal: create the `DEMO_FACTORY_API` module in ORDS using Database Actions REST Workshop, validate it, then export it so it becomes repeatable.
+
+1. Confirm `DEMO_FACTORY_ADMIN` schema is REST-enabled
+   - In Database Actions, open REST Workshop.
+   - If the schema is not enabled, enable REST for `DEMO_FACTORY_ADMIN`.
+   - Use a simple, stable URL mapping (example): `demo_factory_admin`.
+
+2. Create the module
+   - Module name: `DEMO_FACTORY_API`
+   - Base path: `/demo_factory/`
+   - Status: Published (or equivalent)
+
+3. Create a health endpoint (first acceptance check)
+   - Resource template: `health`
+   - Method: `GET`
+   - Source type: SQL
+   - SQL (example):
+     - `select 'ok' as status, systimestamp as db_time from dual`
+   - Response: JSON
+
+4. Auth for MVP
+   - Use Basic Auth (internal demo only).
+   - Create an ORDS privilege/role and map it to the health template.
+   - Create an ORDS user or map to DB user depending on your ORDS configuration.
+   - Acceptance: calling `GET /ords/demo_factory/health` returns JSON.
+
+5. Validate from the same network path n8n will use
+   - From your workstation (PowerShell) or from the n8n host, curl the endpoint.
+   - If APEX/ORDS forces redirects, ensure the final endpoint is reachable (2xx/3xx).
+
+6. Export for repeatability
+   - In REST Workshop, export the module definition to SQL.
+   - Save it into the repo under:
+     - `D:\Demo_Factory\ords\demo_factory_api_export.sql`
+   - This exported SQL becomes the repeatable deployment artifact.
+
+Acceptance criteria (ORDS-001)
+
+- `DEMO_FACTORY_API` exists with base path `/demo_factory/`.
+- `GET /demo_factory/health` returns JSON `status=ok`.
+- Export SQL saved under `D:\Demo_Factory\ords\demo_factory_api_export.sql`.
+
+
+Module name: `DEMO_FACTORY_API`
+
+Proposed base path:
+
+- `/ords/demo_factory/`
+
+Schema:
+
+- REST enable `DEMO_FACTORY_ADMIN` (for the control plane API only).
+
+Routing layout (MVP):
+
+- Runs:
+  - `POST /runs/{run_id}/step` -> write `RUN_STEPS` (ORDS-002)
+  - `POST /runs/{run_id}/provision` -> `PKG_DEMO_FACTORY_PROVISION` (ORDS-003)
+  - `POST /runs/{run_id}/reset` -> `PKG_DEMO_FACTORY_RESET` (ORDS-004)
+  - `POST /runs/{run_id}/drop` -> `PKG_DEMO_FACTORY_DROP` (ORDS-004)
+  - `GET /runs/{run_id}` -> return run + steps (optional)
+
+Auth (MVP):
+
+- Use Basic Auth or APEX session auth for `DEMO_FACTORY_API`.
+- Admin-only enablement endpoints are separate module (`ORDS-005/006`) and Basic Auth for n8n.
+
+Acceptance criteria (ORDS-001):
+
+- Module exists under the chosen base path.
+- A simple `GET /health` (or equivalent) can be called successfully from the same network path n8n will use.
+- ORDS routing conventions are documented and stable.
+
+Scaffold files:
+
+- `D:\Demo_Factory\ords\ORDS-001_scaffold.md`
+- `D:\Demo_Factory\ords\ords_001_install_template.sql`\nAcceptance criteria:
+
+Acceptance criteria:
+
+- A run can be created, stepped, and completed with a full audit trail.
+- Provision creates a tenant schema and minimal objects deterministically.
+- Reset re-seeds data without dropping schema.
+- Drop removes tenant schema and updates control tables.
+
+
+#### ORDS-002 Implementation Notes (POST /runs/:run_id/step)
+
+Goal: allow n8n (and local smoke tests) to write RUN_STEPS updates for a given run_id.
+
+REST Workshop setup (module: DEMO_FACTORY_API):
+
+1. Resource template: runs/:run_id/step
+2. Method: POST
+3. Source type: PL/SQL
+4. POST handler source (final; do not include SQL*Plus trailing  / in REST Workshop):
+
+~~~sql
+declare
+  l_body        clob := :body_text;
+  l_run_id      varchar2(36) := :run_id;
+
+  l_step_key    varchar2(200);
+  l_status      varchar2(30);
+  l_message     varchar2(4000);
+  l_attempt_inc number;
+  l_details     clob;
+begin
+  l_step_key := json_value(l_body, '$.step_key' returning varchar2(200) null on error null on empty);
+  l_status   := json_value(l_body, '$.status'   returning varchar2(30)  null on error null on empty);
+  l_message  := json_value(l_body, '$.message'  returning varchar2(4000) null on error null on empty);
+
+  l_attempt_inc := json_value(
+    l_body,
+    '$.attempt_inc'
+    returning number
+    default 0 on error
+    default 0 on empty
+  );
+
+  l_details := json_query(l_body, '$.details_json' returning clob null on error null on empty);
+
+  if l_step_key is null then
+    raise_application_error(-20010, 'Missing step_key');
+  end if;
+
+  if l_status is null then
+    raise_application_error(-20011, 'Missing status');
+  end if;
+
+  pkg_demo_factory_runs.upsert_step(
+    p_run_id       => l_run_id,
+    p_step_key     => l_step_key,
+    p_status       => l_status,
+    p_message      => l_message,
+    p_attempt_inc  => nvl(l_attempt_inc, 0),
+    p_details_json => l_details
+  );
+
+  owa_util.mime_header('application/json', false);
+  owa_util.http_header_close;
+  htp.p('{"ok":true}');
+end;
+~~~
+
+Confirmed gotchas (hit during build-out):
+
+- REST Workshop handler source must not include SQL*Plus terminator / (causes ORA-06550 / PLS-00103).
+- Use :body_text (not :body) for JSON text; :body is commonly BLOB and causes PLS-00382.
+- If you set headers with owa_util.mime_header(..., false) you must call owa_util.http_header_close; before writing the body. Without it, PowerShell can error: protocol violation / header name is invalid.
+
+Smoke tests (PowerShell):
+
+- Minimal echo handler returned HTTP 200 with JSON.
+- Upsert step call returned HTTP 200 and {"ok":true}.
+- With details_json as an object, upsert succeeded.
+
+DB validation:
+
+- Confirmed row inserted into DEMO_FACTORY_ADMIN.RUN_STEPS for the test run_id:
+  - 4A4A673AC48ACD5DE0636214000A7BAD | ORDS:STEP_TEST | RUNNING | 2 | hello from ORDS (details_json) | {"ping":"pong","when":"2026-02-08T06:16:45.1211707+00:00"}
+
+Repeatability:
+
+- Re-exported ORDS module after ORDS-002 changes:
+  - D:\Demo_Factory\ords\demo_factory_api_export.sql
+
+### B. ORDS REST API (Control Plane API Surface)
+
+Goal: Provide stable HTTPS endpoints for n8n to call; all privileged actions happen in DB.
+
+Deliverables:
+
+- ORDS module: `DEMO_FACTORY_API`
+- Endpoints (minimum):
+  - `POST /ords/demo_factory/runs/:run_id/step` (write step status/log)
+  - `POST /ords/demo_factory/runs/:run_id/provision`
+  - `POST /ords/demo_factory/runs/:run_id/reset`
+  - `POST /ords/demo_factory/runs/:run_id/drop`
+  - `GET  /ords/demo_factory/runs/:run_id`
+
+Tasks:
+
+1. Decide auth model for ORDS:
+   - MVP: APEX session auth or basic auth (internal only)
+   - Later: OAuth2/IAM
+2. Implement request/response contracts:
+   - require `run_id`
+   - accept manifest JSON
+   - return structured status + error details
+3. Implement ORDS handlers calling PL/SQL packages.
+4. Implement consistent error mapping:
+   - include `run_id`, `step_key`, `error_code`, `error_message`
+5. Test endpoints from inside n8n container (same network path used in production).
+
+Acceptance criteria:
+
+- n8n can call the endpoints and receive consistent responses.
+- ORDS endpoints are idempotent for a given `run_id`.
+
+### C. APEX Parent App (Operator UI)
+
+Goal: Provide a single operator entry point to create customer tenants and track runs.
+
+Deliverables:
+
+- APEX Control Plane app (pages suggested):
+  - Dashboard
+  - New Tenant (form)
+  - Run Detail (status + steps)
+  - Tenants (list + reset/drop actions)
+  - Admin (defaults, packs, prompt library)
+
+Tasks:
+
+1. Create application settings table or application items for:
+   - n8n webhook base URL
+   - ORDS base URL (if needed)
+2. New Tenant page:
+   - collect customer label and pack toggles
+   - build manifest JSON (server-side)
+   - insert `RUNS` record with `QUEUED`
+   - invoke n8n webhook (APEX web service call)
+3. Run Detail page:
+   - show `RUNS` and `RUN_STEPS` records
+   - show latest error details if failed
+4. Tenants page:
+   - list tenants
+   - actions: reset/drop (each creates a new RUN and calls n8n webhook)
+5. Authorization:
+   - MVP: APEX accounts; restrict admin actions by role.
+
+Acceptance criteria:
+
+- Operator can provision a tenant from APEX without touching n8n UI.
+- Operator can see run steps update as n8n executes.
+
+### D. n8n Workflows (Production Orchestration)
+
+Goal: Create production workflows that implement the E2E pipeline and use the decided connectivity method.
+
+Required baseline workflow (already exists):
+
+- `OCI Connectivity Validation (Object Storage + APEX/ORDS + AI + ADB TCP)`
+
+New workflows to build:
+
+1. `Demo Factory - Provision Tenant` (webhook triggered by APEX)
+2. `Demo Factory - Reset Tenant`
+3. `Demo Factory - Drop Tenant`
+
+Tasks:
+
+1. Define webhook endpoints and shared payload schema (run_id + manifest).
+2. Implement workflow patterns:
+   - validate inputs
+   - call connectivity validation (sub-workflow or inline)
+   - call ORDS API to execute DB-side actions
+   - write step updates back to control plane
+3. Implement retries and backoff for transient failures.
+4. Persist run artifacts to Object Storage:
+   - `runs/<run_id>/manifest.json`
+   - `runs/<run_id>/execution-summary.json`
+5. Implement dedupe policy:
+   - after importing updated workflow JSON, run `D:\n8n_backups\cleanup-duplicate-workflows.ps1`
+
+Acceptance criteria:
+
+- Provision workflow can run end-to-end from APEX submission.
+- Failures are surfaced in APEX with actionable messages.
+- Run artifacts exist in Object Storage for audit/debug.
+
+### E. Object Storage (Assets, Manifests, Run Artifacts)
+
+Goal: Establish conventions and minimal objects for demos and automation.
+
+Tasks:
+
+1. Define prefix conventions and retention:
+   - `manifests/`
+   - `runs/<run_id>/`
+   - `tenants/<tenant_key>/`
+2. Seed minimal synthetic assets (docs/images) for Doc AI and Vision packs (future phases).
+3. Define naming/versioning conventions for assets.
+
+Acceptance criteria:
+
+- n8n can create/run artifacts under `runs/<run_id>/`.
+- APEX/ORDS and n8n agree on object naming conventions.
+
+### F. AI Feature Packs (Later Phases)
+
+Goal: Add demo packs in a controlled, toggleable way.
+
+Tasks (recommended order):
+
+1. Select AI pack (DB-native first)
+2. Document Understanding pack
+3. Vision pack
+4. GenAI pack (already validated connectivity)
+
+Acceptance criteria:
+
+- Each pack can be turned on/off via the manifest.
+- Each pack writes outputs to tenant schema tables with clear provenance.
+
+### G. Ops / CI/CD / Runbooks
+
+Goal: Make it repeatable for a broader team.
+
+Tasks:
+
+1. Decide repo structure (db/apex/scripts) and pipeline approach (OCI DevOps vs Terraform/Resource Manager).
+2. Automate deployments:
+   - control schema DDL/package deployment
+   - ORDS module deployment
+   - APEX app export/import
+3. Document operational SOPs:
+   - how to rotate OCI API key (host-side)
+   - how to restore n8n from backups
+   - how to troubleshoot failed runs
+
+Acceptance criteria:
+
+- New operator can deploy the control plane and APEX app using documented steps.
+
+### H. OAC Track (Optional / Parallel)
+
+Goal: Mirror APEX narratives with analytics dashboards.
+
+Tasks:
+
+1. Define dataset naming conventions.
+2. Define curated views as stable sources.
+3. Build initial dashboards aligned with tenant schema.
+
+## 3. Suggested Build Sequence (Pragmatic)
+
+1. Database Control Plane: tables + `PKG_DEMO_FACTORY_RUNS` + stub provision
+2. ORDS module for run/step APIs + stub provision endpoint
+3. APEX Control Plane app: New Tenant + Run Detail
+4. n8n Provision workflow: webhook + ORDS calls + step updates
+5. Expand provisioning (DDL + synthetic seed)
+6. Add reset/drop flows
+7. Add AI packs incrementally
+
+## 4. Definition Of Done (MVP)
+
+MVP is complete when:
+
+- APEX parent app can provision/reset/drop tenants via n8n without manual steps in between
+- All actions are synthetic-only and auditable in `RUNS` + `RUN_STEPS`
+- Object Storage contains run artifacts per run_id
+- n8n backups run nightly and are verifiably restorable
+
+
+#### DB-004 Implementation Notes (Reset/Drop)
+
+Packages to create in `DEMO_FACTORY_ADMIN`:
+
+- `PKG_DEMO_FACTORY_RESET`
+  - Note: RESET may log RESET:CLEAR_OBJECTS and/or RESET:SEED_BASELINE as SKIPPED under DEMO_FACTORY_ADMIN due to ADB cross-schema privilege boundaries; full cleanup/seed can be performed later via admin-controlled ORDS endpoints (ORDS-005/ORDS-006) invoked from n8n (N8N-004).
+  - Responsibility: reset a tenant to a known-good baseline without dropping the user.
+  - Inputs: `p_run_id`, `p_schema_name` (or `p_tenant_id`), optional `p_reset_mode`.
+  - Behavior (MVP):
+    - Validate tenant exists and is `ACTIVE`.
+    - Clear demo objects/data created by Demo Factory in the tenant schema.
+    - Recreate/ensure baseline objects exist.
+    - Re-seed minimal baseline data.
+    - Update `TENANTS.updated_at` and write step logs.
+  - Constraint: use an explicit allowlist of objects Demo Factory creates (avoid broad cross-schema drops).
+
+- `PKG_DEMO_FACTORY_DROP`
+  - Responsibility: deprovision a tenant completely.
+  - Inputs: `p_run_id`, `p_schema_name` (or `p_tenant_id`), optional `p_drop_mode`.
+  - Behavior (MVP):
+    - Validate tenant exists.
+    - Drop the tenant DB user/schema.
+    - Mark `TENANTS.status = 'DROPPED'` and set `updated_at`.
+    - Write step logs.
+
+Recommended step keys (used with `PKG_DEMO_FACTORY_RUNS.upsert_step`):
+
+- Reset:
+  - `RESET:VALIDATE`
+  - `RESET:CLEAR_OBJECTS`
+  - `RESET:ENSURE_BASELINE`
+  - `RESET:SEED_BASELINE`
+  - `RESET:DONE`
+
+- Drop:
+  - `DROP:VALIDATE`
+  - `DROP:DROP_USER`
+  - `DROP:UPDATE_TENANT`
+  - `DROP:DONE`
+
+Acceptance criteria for DB-004:
+
+- Reset:
+  - Reset is idempotent.
+  - After reset, baseline `DF_HEALTHCHECK` exists in the tenant schema.
+- Drop:
+  - Tenant user no longer exists in `ALL_USERS`.
+  - Tenant row remains in `TENANTS` with `status='DROPPED'`.
+  - A full step trail exists in `RUN_STEPS`.
+
+Scripts to create (browser-safe inline installers):
+
+- `D:\Demo_Factory\db\control\004_pkg_demo_factory_reset_inline.sql`
+- `D:\Demo_Factory\db\control\005_pkg_demo_factory_drop_inline.sql`
+\n## 5. Execution Checklist
+
+Use this section as the execution tracker. The intent is that each item becomes a work ticket. Keep the IDs stable.
+
+Status key:
+
+- `[ ]` Not started
+- `[~]` In progress
+- `[x]` Done
+
+### 5.1 MVP Backbone (DB + ORDS + APEX + n8n)
+
+| ID | Status | Area | Task | Depends On | Done When |
+|---|---|---|---|---|---|
+| DB-001 | [x] | DB | Create control tables (`TENANTS`, `RUNS`, `RUN_STEPS`, optional `MANIFESTS`) | None | Tables exist with basic indexes; can insert/select a RUN and RUN_STEP |
+| DB-002 | [x] | DB | Implement run/step package (`PKG_DEMO_FACTORY_RUNS`) | DB-001 | Can create a RUN, upsert step, mark run complete; errors are recorded (run `D:\Demo_Factory\db\control\002_pkg_demo_factory_runs_inline.sql` in browser SQL tools) |
+| DB-003 | [x] | DB | Provision skeleton package (PKG_DEMO_FACTORY_PROVISION) | DB-002 | Creates a tenant schema/user deterministically and registers it in TENANTS; REST + Data Sharing enablement are expected to be SKIPPED at DB-level and performed later via ORDS-005/ORDS-006 + N8N-004 |
+| DB-004 | [x] | DB | Reset/drop skeleton packages (`PKG_DEMO_FACTORY_RESET`, `PKG_DEMO_FACTORY_DROP`) | DB-003 | Reset reseeds; drop removes schema; control tables updated |
+| ORDS-001 | [x] | ORDS | Create ORDS module `DEMO_FACTORY_API` + routing layout | DB-002 | Module exists and is callable via HTTPS |
+| ORDS-002 | [x] | ORDS | Implement POST /runs/:run_id/step endpoint | ORDS-001 | PowerShell + n8n can write step updates that appear in RUN_STEPS; module export updated |
+| ORDS-003 | [ ] | ORDS | Implement `POST /runs/:run_id/provision` endpoint (calls PL/SQL) | ORDS-001, DB-003 | Endpoint provisions tenant and returns structured result |
+| ORDS-004 | [ ] | ORDS | Implement `POST /runs/:run_id/reset` and `/drop` endpoints | ORDS-001, DB-004 | Endpoints execute reset/drop with audit trail |
+| ORDS-005 | [ ] | ORDS | Create admin-only ORDS module (Basic Auth) for post-provision enablement | ORDS-001 | Module exists and is callable via HTTPS; access restricted to n8n via Basic Auth |
+| ORDS-006 | [ ] | ORDS | Implement admin endpoints: POST /admin/enable-rest and POST /admin/enable-sharing | ORDS-005 | Endpoints can enable tenant schema REST + data sharing in privileged context and return structured status |
+| APEX-001 | [ ] | APEX | Create app settings (n8n webhook base URL, etc.) | None | APEX can resolve n8n target without hardcoding in page processes |
+| APEX-002 | [ ] | APEX | Build â€œNew Tenantâ€ page (manifest build + create RUN) | DB-002 | Submitting creates `RUNS` record with `QUEUED` and stored manifest JSON |
+| APEX-003 | [ ] | APEX | Build â€œRun Detailâ€ page (RUN + RUN_STEPS) | DB-002 | Operator can see steps and errors for any run_id |
+| APEX-004 | [ ] | APEX | Add APEX process to call n8n provision webhook | APEX-002, N8N-001 | Submitting â€œNew Tenantâ€ triggers n8n workflow and updates RUN status |
+| N8N-001 | [ ] | n8n | Create `Demo Factory - Provision Tenant` workflow (webhook trigger) | ORDS-002, ORDS-003 | Workflow validates payload, writes steps, calls ORDS provision, ends with success/fail |
+| N8N-002 | [ ] | n8n | Create `Demo Factory - Reset Tenant` workflow | ORDS-002, ORDS-004 | Reset is executable from APEX action and logs steps |
+| N8N-004 | [ ] | n8n | Add post-provision admin enablement calls (Basic Auth) to ORDS admin endpoints | N8N-001, ORDS-006 | Provision workflow calls /admin/enable-rest + /admin/enable-sharing and logs step results |
+| N8N-003 | [ ] | n8n | Create `Demo Factory - Drop Tenant` workflow | ORDS-002, ORDS-004 | Drop is executable from APEX action and logs steps |
+
+### 5.2 Object Storage Conventions (Run Artifacts)
+
+| ID | Status | Area | Task | Depends On | Done When |
+|---|---|---|---|---|---|
+| OS-001 | [ ] | OS | Finalize prefix conventions (`runs/<run_id>/`, `tenants/<tenant_key>/`, `manifests/`) | None | Conventions documented and used by n8n workflows |
+| OS-002 | [ ] | OS | n8n writes `runs/<run_id>/manifest.json` and `execution-summary.json` | N8N-001, OS-001 | Each run has artifacts in Object Storage for audit/debug |
+
+### 5.3 Connectivity Harness (Keep It Healthy)
+
+| ID | Status | Area | Task | Depends On | Done When |
+|---|---|---|---|---|---|
+| N8N-VAL-001 | [x] | n8n | Maintain `OCI Connectivity Validation (Object Storage + APEX/ORDS + AI + ADB TCP)` as the baseline harness | None | Workflow stays importable; validates OS/APEX/ADB/GenAI end-to-end |
+| N8N-VAL-002 | [ ] | n8n | Add a â€œcall this firstâ€ step inside Provision/Reset/Drop workflows | N8N-001 | Each production workflow fails fast if connectivity breaks |
+
+### 5.4 Ops / Runbooks / Repeatability
+
+| ID | Status | Area | Task | Depends On | Done When |
+|---|---|---|---|---|---|
+| OPS-001 | [x] | Ops | n8n backups daily (14-day local + OCI retention) | None | `schtasks` entry exists and uploads to Object Storage |
+| OPS-002 | [ ] | Ops | Document restore drill and verify restore once | OPS-001 | A restore can be performed from backups and validated |
+| OPS-003 | [ ] | Ops | Create â€œoperator quickstartâ€ (APEX URL, n8n URL, common failures) | APEX-003, N8N-001 | A new operator can run a full provision without tribal knowledge |
+
+### 5.5 AI Packs (Post-MVP)
+
+| ID | Status | Area | Task | Depends On | Done When |
+|---|---|---|---|---|---|
+| AI-001 | [ ] | AI | Select AI pack (DB-native) | DB-003 | Manifest toggles work; outputs stored in tenant schema |
+| AI-002 | [ ] | AI | Document Understanding pack | AI-001, OS-001 | Synthetic PDFs processed; outputs stored in tenant schema |
+| AI-003 | [ ] | AI | Vision pack | AI-001, OS-001 | Synthetic images processed; outputs stored in tenant schema |
+| AI-004 | [x] | AI | Generative AI connectivity validated (Inference /chat) | None | GenAI step returns HTTP 200 for chosen model |
+
+
+
